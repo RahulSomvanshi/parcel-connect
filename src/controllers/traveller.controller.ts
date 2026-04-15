@@ -116,7 +116,7 @@ export const getMatchingParcels = async (req: any, res: Response) => {
   }
 };
 
-// 🔥 Traveller ke assigned parcels
+// 🔥 Traveller  assigned parcels
 export const getAssignedParcels = async (req: any, res: any) => {
   try {
     const parcels = await Parcel.find({

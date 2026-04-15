@@ -24,9 +24,9 @@ export const register = async (req: Request, res: Response) => {
 
     // generate OTP
     const otp = generateOTP();
-    const allowedRoles = ["sender", "traveller"];
+    const allowedRoles = ["user", "admin"];
 
-    let finalRole = "sender";
+    let finalRole = "user";
 
     if (role && allowedRoles.includes(role)) {
       finalRole = role;
@@ -123,6 +123,7 @@ export const login = async (req: Request, res: Response) => {
         fullName: user.fullName,
         phone: user.phone,
         role: user.role,
+        isVerifed:user.isVerified
       },
     });
   } catch (error: any) {

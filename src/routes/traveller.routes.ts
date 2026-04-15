@@ -15,29 +15,29 @@ import { authorizeRoles } from "../middleware/role.middleware";
 const router = Router();
 
 // CRUD
-router.post("/", authMiddleware, authorizeRoles("traveller"), createTraveller);
+router.post("/", authMiddleware, authorizeRoles("user", "admin"), createTraveller);
 
-router.get("/", authMiddleware, authorizeRoles("traveller"), getMyTravellers);
-
-router.get("/:id", authMiddleware, authorizeRoles("traveller"), getTravellerById);
-
-router.put("/:id", authMiddleware, authorizeRoles("traveller"), updateTraveller);
-
-router.delete("/:id", authMiddleware, authorizeRoles("traveller"), deleteTraveller);
+router.get("/", authMiddleware, authorizeRoles("user", "admin"), getMyTravellers);
 
 // MATCHING
 router.get(
   "/matching/parcels",
   authMiddleware,
-  authorizeRoles("traveller"),
+  authorizeRoles("user", "admin"),
   getMatchingParcels
 );
 
 router.get(
   "/assigned",
   authMiddleware,
-  authorizeRoles("traveller"),
+  authorizeRoles("user", "admin"),
   getAssignedParcels
 );
+
+router.get("/:id", authMiddleware, authorizeRoles("user", "admin"), getTravellerById);
+
+router.put("/:id", authMiddleware, authorizeRoles("user", "admin"), updateTraveller);
+
+router.delete("/:id", authMiddleware, authorizeRoles("user", "admin"), deleteTraveller);
 
 export default router;

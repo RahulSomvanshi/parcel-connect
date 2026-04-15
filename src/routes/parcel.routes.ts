@@ -14,28 +14,30 @@ import { authorizeRoles } from "../middleware/role.middleware";
 
 const router = Router();
 
-// Sender only routes
-router.post("/", authMiddleware, authorizeRoles("sender"), createParcel);
+// User/Admin routes
+router.post("/", authMiddleware, authorizeRoles("user", "admin"), createParcel);
 
-router.get("/", authMiddleware, authorizeRoles("sender"), getMyParcels);
+router.get("/", authMiddleware, authorizeRoles("user", "admin"), getMyParcels);
 
-router.get("/:id", authMiddleware, authorizeRoles("sender"), getParcelById);
 
-router.put("/:id", authMiddleware, authorizeRoles("sender"), updateParcel);
-
-router.delete("/:id", authMiddleware, authorizeRoles("sender"), deleteParcel);
 
 router.post(
   "/respond",
   authMiddleware,
-  authorizeRoles("traveller"),
+  authorizeRoles("user", "admin"),
   respondToParcel
 );
 
 router.get(
   "/my",
   authMiddleware,
-  authorizeRoles("sender"),
+  authorizeRoles("user", "admin"),
   getMyParcelsWithTraveller
 );
+
+router.get("/:id", authMiddleware, authorizeRoles("user", "admin"), getParcelById);
+
+router.put("/:id", authMiddleware, authorizeRoles("user", "admin"), updateParcel);
+
+router.delete("/:id", authMiddleware, authorizeRoles("user", "admin"), deleteParcel);
 export default router;

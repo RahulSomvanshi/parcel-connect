@@ -118,7 +118,8 @@ export const respondToParcel = async (req: any, res: Response) => {
         { new: true }
       );
 
-      // ❌ already taken
+   
+      // ❌ a   lready taken
       if (!parcel) {
         return res.status(400).json({
           message: "Parcel already accepted by someone else",
@@ -130,7 +131,30 @@ export const respondToParcel = async (req: any, res: Response) => {
         parcel,
       });
     }
+    if (action === "deliver") {
+      const parcel = await Parcel.findOneAndUpdate(
+        {
+          _id: parcelId,
+          traveller: req.user.userId, // 🔥 only assigned traveller
+          status: "matched",          // 🔥 must be matched
+        },
+        {
+          status: "delivered",
+        },
+        { new: true }
+      );
 
+      if (!parcel) {
+        return res.status(400).json({
+          message: "Parcel cannot be delivered",
+        });
+      }
+
+      return res.json({
+        message: "Parcel marked as delivered",
+        parcel,
+      });
+    }
     // ❌ invalid action
     return res.status(400).json({
       message: "Invalid action (accept/decline only)",
