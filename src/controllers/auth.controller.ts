@@ -4,6 +4,7 @@ import User from "../models/user.model";
 import { generateOTP } from "../utils/otp";
 import { generateToken, generateRefreshToken } from "../utils/jwt";
 import jwt from "jsonwebtoken";
+import { sendSMS } from "../utils/sendSMS";
 
 // REGISTER
 export const register = async (req: Request, res: Response) => {
@@ -31,21 +32,30 @@ export const register = async (req: Request, res: Response) => {
     if (role && allowedRoles.includes(role)) {
       finalRole = role;
     }
-    await User.create({
+      const user = await User.create({
       fullName,
       email,
       phone,
       password: hashedPassword,
       role: finalRole,
-      otp,
+      otp, // store (later hash kar sakte ho)
       otpExpiry: new Date(Date.now() + 5 * 60 * 1000),
+      isVerified: false,
     });
 
     console.log("OTP:", otp); // later SMS/email
+    // 📱 send OTP (SMS or Email)
+    await sendSMS(phone, otp); 
+    // OR
+    // await sendEmail(email, "OTP Verification", `Your OTP is ${otp}`);
+
+    console.log("OTP:", otp); // debug only
 
     return res.json({
-      message: "Registered successfully. Verify OTP",
+      message: "Registered successfully. OTP sent",
+      phone: user.phone, // frontend use karega
     });
+
   } catch (error: any) {
     return res.status(500).json({ message: error.message });
   }
@@ -178,7 +188,7 @@ export const resendOtp = async (req: Request, res: Response) => {
 
     user.otp = otp;
     user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
-
+    await sendSMS(phone, otp);
     await user.save();
 
     console.log("New OTP:", otp);
@@ -189,5 +199,16 @@ export const resendOtp = async (req: Request, res: Response) => {
 
   } catch (error: any) {
     return res.status(500).json({ message: error.message });
+  }
+};
+
+export const getAllUsers = async (req: any, res: any) => {
+  try {
+    const users = await User.find().select("-password");
+
+    res.json(users);
+
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
   }
 };

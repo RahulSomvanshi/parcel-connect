@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import Parcel from "../models/parcel.model";
+import { sendEmail } from "../utils/sendEmail";
 
 // CREATE
 export const createParcel = async (req: any, res: Response) => {
@@ -88,28 +89,120 @@ export const deleteParcel = async (req: any, res: Response) => {
   }
 };
 
+// export const respondToParcel = async (req: any, res: Response) => {
+//   try {
+//     const { parcelId, action } = req.body;
+
+//     // ✅ basic validation
+//     if (!parcelId || !action) {
+//       return res.status(400).json({ message: "parcelId & action required" });
+//     }
+
+//     // ❌ DECLINE (MVP simple)
+//     if (action === "decline") {
+//       return res.json({
+//         message: "Parcel declined",
+//       });
+//     }
+
+//     // ✅ ACCEPT (IMPORTANT 🔥)
+//     if (action === "accept") {
+//       const parcel = await Parcel.findOneAndUpdate(
+//         {
+//           _id: parcelId,
+//           status: "searching", // 🔥 only allow if still available
+//         },
+//         {
+//           traveller: req.user.userId,
+//           status: "matched",
+//         },
+//         { new: true }
+//       );
+
+   
+//       // ❌ a   lready taken
+//       if (!parcel) {
+//         return res.status(400).json({
+//           message: "Parcel already accepted by someone else",
+//         });
+//       }
+
+//       return res.json({
+//         message: "Parcel accepted successfully",
+//         parcel,
+//       });
+//     }
+//     if (action === "deliver") {
+//       const parcel = await Parcel.findOneAndUpdate(
+//         {
+//           _id: parcelId,
+//           traveller: req.user.userId, // 🔥 only assigned traveller
+//           status: "matched",          // 🔥 must be matched
+//         },
+//         {
+//           status: "delivered",
+//         },
+//         { new: true }
+//       );
+
+//       if (!parcel) {
+//         return res.status(400).json({
+//           message: "Parcel cannot be delivered",
+//         });
+//       }
+
+//       return res.json({
+//         message: "Parcel marked as delivered",
+//         parcel,
+//       });
+//     }
+//     // ❌ invalid action
+//     return res.status(400).json({
+//       message: "Invalid action (accept/decline only)",
+//     });
+
+//   } catch (err: any) {
+//     return res.status(500).json({ message: err.message });
+//   }
+// };
 export const respondToParcel = async (req: any, res: Response) => {
   try {
     const { parcelId, action } = req.body;
 
-    // ✅ basic validation
+    // ✅ validation
     if (!parcelId || !action) {
       return res.status(400).json({ message: "parcelId & action required" });
     }
 
-    // ❌ DECLINE (MVP simple)
+    // 🔍 parcel fetch with sender
+    const parcel = await Parcel.findById(parcelId).populate("sender");
+
+    if (!parcel) {
+      return res.status(404).json({ message: "Parcel not found" });
+    }
+
+    const sender: any = parcel.sender;
+
+    // ❌ DECLINE
     if (action === "decline") {
+
+      await sendEmail(
+        sender.email,
+        "Parcel Declined ❌",
+        `Your parcel from ${parcel.pickup.city} to ${parcel.drop.city} was declined by a traveller. Please wait for another traveller.`
+      );
+
       return res.json({
-        message: "Parcel declined",
+        message: "Parcel declined & email sent",
       });
     }
 
-    // ✅ ACCEPT (IMPORTANT 🔥)
+    // ✅ ACCEPT
     if (action === "accept") {
-      const parcel = await Parcel.findOneAndUpdate(
+      const updatedParcel = await Parcel.findOneAndUpdate(
         {
           _id: parcelId,
-          status: "searching", // 🔥 only allow if still available
+          status: "searching",
         },
         {
           traveller: req.user.userId,
@@ -118,25 +211,31 @@ export const respondToParcel = async (req: any, res: Response) => {
         { new: true }
       );
 
-   
-      // ❌ a   lready taken
-      if (!parcel) {
+      if (!updatedParcel) {
         return res.status(400).json({
           message: "Parcel already accepted by someone else",
         });
       }
 
+      await sendEmail(
+        sender.email,
+        "Parcel Accepted 🎉",
+        `Good news! Your parcel from ${parcel.pickup.city} to ${parcel.drop.city} has been accepted by a traveller.`
+      );
+
       return res.json({
-        message: "Parcel accepted successfully",
-        parcel,
+        message: "Parcel accepted successfully & email sent",
+        parcel: updatedParcel,
       });
     }
+
+    // 📦 DELIVER
     if (action === "deliver") {
-      const parcel = await Parcel.findOneAndUpdate(
+      const updatedParcel = await Parcel.findOneAndUpdate(
         {
           _id: parcelId,
-          traveller: req.user.userId, // 🔥 only assigned traveller
-          status: "matched",          // 🔥 must be matched
+          traveller: req.user.userId,
+          status: "matched",
         },
         {
           status: "delivered",
@@ -144,27 +243,33 @@ export const respondToParcel = async (req: any, res: Response) => {
         { new: true }
       );
 
-      if (!parcel) {
+      if (!updatedParcel) {
         return res.status(400).json({
           message: "Parcel cannot be delivered",
         });
       }
 
+      await sendEmail(
+        sender.email,
+        "Parcel Delivered ✅",
+        `Your parcel from ${parcel.pickup.city} to ${parcel.drop.city} has been successfully delivered.`
+      );
+
       return res.json({
-        message: "Parcel marked as delivered",
-        parcel,
+        message: "Parcel marked as delivered & email sent",
+        parcel: updatedParcel,
       });
     }
-    // ❌ invalid action
+
+    // ❌ invalid
     return res.status(400).json({
-      message: "Invalid action (accept/decline only)",
+      message: "Invalid action (accept/decline/deliver only)",
     });
 
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }
 };
-
 
 // 🔥 Sender ke parcels with traveller info
 export const getMyParcelsWithTraveller = async (req: any, res: any) => {
@@ -181,3 +286,4 @@ export const getMyParcelsWithTraveller = async (req: any, res: any) => {
     res.status(500).json({ message: err.message });
   }
 };
+
