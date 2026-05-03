@@ -6,14 +6,24 @@ export const sendEmail = async (
   text: string
 ) => {
   try {
-    // Create a transporter object using your SMTP service (e.g., Gmail, your own SMTP server)
+    console.log("📧 Starting email send process...");
+    console.log("📧 Email config check - EMAIL_FROM:", process.env.EMAIL_FROM ? "✅ Set" : "❌ Missing");
+    console.log("📧 Email config check - EMAIL_PASSWORD:", process.env.EMAIL_PASSWORD ? "✅ Set" : "❌ Missing");
+    console.log("📧 Sending to:", to);
+    console.log("📧 Subject:", subject);
+    console.log("📧 Message:", text);
+
     const transporter = nodemailer.createTransport({
-      service: "gmail", // Replace with your email service (e.g., 'gmail', 'smtp.mailtrap.io', etc.)
+      host: process.env.EMAIL_HOST,
+      port: Number(process.env.EMAIL_PORT),
+      secure: true, // true for 465
       auth: {
-        user: process.env.EMAIL_FROM, // Your email address (sender)
-        pass: process.env.EMAIL_PASSWORD, // Your email password or app password (ensure to use environment variables)
+        user: process.env.EMAIL_FROM,
+        pass: process.env.EMAIL_PASSWORD,
       },
     });
+
+    console.log("📧 Transporter created successfully");
 
     // Send email
     const info = await transporter.sendMail({
@@ -23,8 +33,19 @@ export const sendEmail = async (
       text, // Plain text body
     });
 
-    console.log("✅ Email sent: " + info.response);
+    console.log("✅ Email sent successfully!");
+    console.log("✅ Email response:", info.response);
+    console.log("✅ Message ID:", info.messageId);
   } catch (err: any) {
-    console.error("❌ Email error:", err.message || err);
+    console.error("❌ Email error details:");
+    console.error("❌ Error message:", err.message);
+    console.error("❌ Error code:", err.code);
+    console.error("❌ Error type:", err.name);
+    if (err.command) {
+      console.error("❌ SMTP command:", err.command);
+    }
+    if (err.response) {
+      console.error("❌ SMTP response:", err.response);
+    }
   }
 };

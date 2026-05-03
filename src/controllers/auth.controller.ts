@@ -5,26 +5,31 @@ import { generateOTP } from "../utils/otp";
 import { generateToken, generateRefreshToken } from "../utils/jwt";
 import jwt from "jsonwebtoken";
 import { sendSMS } from "../utils/sendSMS";
+import { sendEmail } from "../utils/sendEmail";
 
 // REGISTER
 export const register = async (req: Request, res: Response) => {
   try {
+    
     const { fullName, email, phone, password, role } = req.body;
+
 
     // check existing
     const existingUser = await User.findOne({
-      $or: [{ email }, { phone }],
+      $or: [{ email }],
     });
 
     if (existingUser) {
       return res.status(400).json({ message: "User already exists" });
     }
 
+
     // hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // generate OTP
     const otp = generateOTP();
+    
     const allowedRoles = ["user", "admin"];
 
     let finalRole = "user";
@@ -32,7 +37,8 @@ export const register = async (req: Request, res: Response) => {
     if (role && allowedRoles.includes(role)) {
       finalRole = role;
     }
-      const user = await User.create({
+    
+    const user = await User.create({
       fullName,
       email,
       phone,
@@ -43,13 +49,15 @@ export const register = async (req: Request, res: Response) => {
       isVerified: false,
     });
 
-    console.log("OTP:", otp); // later SMS/email
-    // 📱 send OTP (SMS or Email)
-    await sendSMS(phone, otp); 
-    // OR
-    // await sendEmail(email, "OTP Verification", `Your OTP is ${otp}`);
+    
+    // 📱 send OTP (SMS or Email) - Non-blocking
+    // Don't await these to avoid blocking registration
+    sendSMS(phone, otp).catch(err => {
+    });
+    
+    sendEmail(email, "OTP Verification", `Your OTP is ${otp}`).catch(err => {
+    });
 
-    console.log("OTP:", otp); // debug only
 
     return res.json({
       message: "Registered successfully. OTP sent",
@@ -87,8 +95,13 @@ export const login = async (req: Request, res: Response) => {
   try {
     const { phone, password } = req.body;
 
-    // 1. check user
-    const user = await User.findOne({ phone });
+    // 1. check user by phone or email
+    const user = await User.findOne({
+      $or: [
+        { phone: phone },
+        { email: phone } // treat phone field as email if it contains @
+      ]
+    });
 
     if (!user) {
       return res.status(400).json({ message: "User not found" });
@@ -110,7 +123,6 @@ export const login = async (req: Request, res: Response) => {
       user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
       await user.save();
 
-      console.log("New OTP:", otp);
 
       return res.status(400).json({
         message: "OTP sent. Please verify",
@@ -123,6 +135,7 @@ export const login = async (req: Request, res: Response) => {
     const refreshToken = generateRefreshToken(user._id.toString());
 
     user.refreshToken = refreshToken;
+    await user.save();
 
     return res.json({
       message: "Login successful",
@@ -133,7 +146,7 @@ export const login = async (req: Request, res: Response) => {
         fullName: user.fullName,
         phone: user.phone,
         role: user.role,
-        isVerifed:user.isVerified
+        isVerified: user.isVerified
       },
     });
   } catch (error: any) {
@@ -191,8 +204,7 @@ export const resendOtp = async (req: Request, res: Response) => {
     await sendSMS(phone, otp);
     await user.save();
 
-    console.log("New OTP:", otp);
-
+    
     return res.json({
       message: "OTP resent successfully"
     });
