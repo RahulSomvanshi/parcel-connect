@@ -1,13 +1,69 @@
 import { Request, Response } from "express";
 import Parcel from "../models/parcel.model";
 import { sendEmail } from "../utils/sendEmail";
+import {
+  checkProhibitedContent,
+  DEFAULT_PROHIBITED_KEYWORDS,
+} from "../utils/prohibitedItems";
+import { openStatusFilter } from "../constants/parcel";
+import SystemConfig from "../models/system-config.model";
+import Traveller from "../models/traveller.model";
+import { normalizeCityName } from "../utils/city";
+import { getPagination, paginationMeta } from "../utils/pagination";
 
-// CREATE
+const PROHIBITED_ITEMS_KEY = "prohibited_items";
+
+async function getConfiguredProhibitedItems(): Promise<string[]> {
+  const config = await SystemConfig.findOne({ key: PROHIBITED_ITEMS_KEY }).lean();
+  const custom = (config?.stringValues || []).map((v) => String(v).trim().toLowerCase());
+  return Array.from(new Set([...DEFAULT_PROHIBITED_KEYWORDS, ...custom])).filter(Boolean);
+}
+
 export const createParcel = async (req: any, res: Response) => {
   try {
+    const { pickup, drop, weight, parcelDate, preferredTravelDate, description, price } = req.body;
+
+    if (!pickup?.city || !drop?.city) {
+      return res.status(400).json({ message: "Pickup and drop city are required" });
+    }
+    if (!parcelDate) {
+      return res.status(400).json({ message: "parcelDate is required" });
+    }
+
+    const prohibitedItems = await getConfiguredProhibitedItems();
+    const prohibited = checkProhibitedContent(description, undefined, prohibitedItems);
+    if (prohibited.flagged) {
+      return res.status(400).json({
+        message: `Parcel cannot be created with restricted items: ${prohibited.matchedKeywords.join(
+          ", "
+        )}`,
+        blockedItems: prohibited.matchedKeywords,
+      });
+    }
+
     const parcel = await Parcel.create({
-      ...req.body,
+      senderId: req.user.userId,
+      pickup: {
+        city: pickup.city.trim(),
+        address: (pickup.address || pickup.city).trim(),
+      },
+      drop: {
+        city: drop.city.trim(),
+        address: (drop.address || drop.city).trim(),
+      },
+      pickupCity: pickup.city.trim(),
+      dropCity: drop.city.trim(),
+      normalizedPickupCity: normalizeCityName(pickup.city),
+      normalizedDropCity: normalizeCityName(drop.city),
+      weight,
+      parcelDate: new Date(parcelDate),
+      preferredTravelDate: preferredTravelDate ? new Date(preferredTravelDate) : undefined,
+      description,
+      price,
       sender: req.user.userId,
+      status: "PENDING",
+      isFlagged: false,
+      flaggedKeywords: [],
     });
 
     return res.json(parcel);
@@ -16,13 +72,27 @@ export const createParcel = async (req: any, res: Response) => {
   }
 };
 
+/** Sender/traveller UI list of prohibited/disclaimer items */
+export const getProhibitedItems = async (_req: Request, res: Response) => {
+  try {
+    const items = await getConfiguredProhibitedItems();
+    return res.json({ items });
+  } catch (err: any) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 export const getMyParcels = async (req: any, res: Response) => {
   try {
-    const parcels = await Parcel.find({
-      sender: req.user.userId,
-    }).sort({ createdAt: -1 });
+    const { page, limit, skip } = getPagination(req);
 
-    return res.json(parcels);
+    const filter = { sender: req.user.userId };
+    const [parcels, total] = await Promise.all([
+      Parcel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Parcel.countDocuments(filter),
+    ]);
+
+    return res.json({ parcels, pagination: paginationMeta(total, page, limit), total, page, limit });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }
@@ -47,20 +117,35 @@ export const getParcelById = async (req: any, res: Response) => {
 
 export const updateParcel = async (req: any, res: Response) => {
   try {
+    const payload = { ...req.body };
+    if (payload.pickup?.city) {
+      payload.pickupCity = String(payload.pickup.city).trim();
+      payload.normalizedPickupCity = normalizeCityName(payload.pickup.city);
+    }
+    if (payload.drop?.city) {
+      payload.dropCity = String(payload.drop.city).trim();
+      payload.normalizedDropCity = normalizeCityName(payload.drop.city);
+    }
+    if (payload.parcelDate) {
+      payload.parcelDate = new Date(payload.parcelDate);
+    }
+    if (payload.preferredTravelDate) {
+      payload.preferredTravelDate = new Date(payload.preferredTravelDate);
+    }
+
+    const openFilter = openStatusFilter();
     const parcel = await Parcel.findOneAndUpdate(
       {
         _id: req.params.id,
         sender: req.user.userId,
-        status: "searching", // only editable before match
+        status: openFilter,
       },
-      req.body,
+      payload,
       { new: true }
     );
 
     if (!parcel) {
-      return res.status(400).json({
-        message: "Cannot update parcel",
-      });
+      return res.status(400).json({ message: "Cannot update parcel" });
     }
 
     return res.json(parcel);
@@ -74,13 +159,11 @@ export const deleteParcel = async (req: any, res: Response) => {
     const parcel = await Parcel.findOneAndDelete({
       _id: req.params.id,
       sender: req.user.userId,
-      status: "searching", // only before match
+      status: openStatusFilter(),
     });
 
     if (!parcel) {
-      return res.status(400).json({
-        message: "Cannot delete parcel",
-      });
+      return res.status(400).json({ message: "Cannot delete parcel" });
     }
 
     return res.json({ message: "Parcel deleted" });
@@ -89,201 +172,211 @@ export const deleteParcel = async (req: any, res: Response) => {
   }
 };
 
-// export const respondToParcel = async (req: any, res: Response) => {
-//   try {
-//     const { parcelId, action } = req.body;
+const STATUS_TRANSITIONS: Record<string, { from: string[]; to: string }> = {
+  accept: { from: ["PENDING", "OPEN", "searching"], to: "MATCHED" },
+  reject: { from: ["PENDING", "OPEN", "searching"], to: "CANCELLED" },
+  pick_up: { from: ["MATCHED", "ACCEPTED", "matched"], to: "PICKED_UP" },
+  in_transit: { from: ["PICKED_UP", "MATCHED", "ACCEPTED", "matched"], to: "IN_TRANSIT" },
+  deliver: { from: ["IN_TRANSIT", "PICKED_UP", "MATCHED", "matched", "in_transit"], to: "DELIVERED" },
+  cancel: {
+    from: ["PENDING", "OPEN", "MATCHED", "PICKED_UP", "IN_TRANSIT", "searching", "matched", "in_transit"],
+    to: "CANCELLED",
+  },
+};
 
-//     // ✅ basic validation
-//     if (!parcelId || !action) {
-//       return res.status(400).json({ message: "parcelId & action required" });
-//     }
-
-//     // ❌ DECLINE (MVP simple)
-//     if (action === "decline") {
-//       return res.json({
-//         message: "Parcel declined",
-//       });
-//     }
-
-//     // ✅ ACCEPT (IMPORTANT 🔥)
-//     if (action === "accept") {
-//       const parcel = await Parcel.findOneAndUpdate(
-//         {
-//           _id: parcelId,
-//           status: "searching", // 🔥 only allow if still available
-//         },
-//         {
-//           traveller: req.user.userId,
-//           status: "matched",
-//         },
-//         { new: true }
-//       );
-
-   
-//       // ❌ a   lready taken
-//       if (!parcel) {
-//         return res.status(400).json({
-//           message: "Parcel already accepted by someone else",
-//         });
-//       }
-
-//       return res.json({
-//         message: "Parcel accepted successfully",
-//         parcel,
-//       });
-//     }
-//     if (action === "deliver") {
-//       const parcel = await Parcel.findOneAndUpdate(
-//         {
-//           _id: parcelId,
-//           traveller: req.user.userId, // 🔥 only assigned traveller
-//           status: "matched",          // 🔥 must be matched
-//         },
-//         {
-//           status: "delivered",
-//         },
-//         { new: true }
-//       );
-
-//       if (!parcel) {
-//         return res.status(400).json({
-//           message: "Parcel cannot be delivered",
-//         });
-//       }
-
-//       return res.json({
-//         message: "Parcel marked as delivered",
-//         parcel,
-//       });
-//     }
-//     // ❌ invalid action
-//     return res.status(400).json({
-//       message: "Invalid action (accept/decline only)",
-//     });
-
-//   } catch (err: any) {
-//     return res.status(500).json({ message: err.message });
-//   }
-// };
 export const respondToParcel = async (req: any, res: Response) => {
   try {
     const { parcelId, action } = req.body;
 
-    // ✅ validation
     if (!parcelId || !action) {
       return res.status(400).json({ message: "parcelId & action required" });
     }
 
-    // 🔍 parcel fetch with sender
-    const parcel = await Parcel.findById(parcelId).populate("sender");
-
-    if (!parcel) {
-      return res.status(404).json({ message: "Parcel not found" });
-    }
-
-    const sender: any = parcel.sender;
-
-    // ❌ DECLINE
-    if (action === "decline") {
-
-      await sendEmail(
-        sender.email,
-        "Parcel Declined ❌",
-        `Your parcel from ${parcel.pickup.city} to ${parcel.drop.city} was declined by a traveller. Please wait for another traveller.`
-      );
-
-      return res.json({
-        message: "Parcel declined & email sent",
+    const transition = STATUS_TRANSITIONS[action];
+    if (!transition) {
+      return res.status(400).json({
+        message:
+          "Invalid action. Use: accept, reject, pick_up, in_transit, deliver, cancel",
       });
     }
 
-    // ✅ ACCEPT
+    // Reject without assignment — traveller declines before accepting
+    if (action === "reject") {
+      const parcel = await Parcel.findById(parcelId).populate("sender");
+      if (!parcel) {
+        return res.status(404).json({ message: "Parcel not found" });
+      }
+      const sender: any = parcel.sender;
+      if (sender?.email) {
+        await sendEmail(
+          sender.email,
+          "Parcel declined",
+          `A traveller declined your parcel from ${parcel.pickup.city} to ${parcel.drop.city}.`
+        );
+      }
+      return res.json({ message: "Parcel rejected by traveller" });
+    }
+
+    // Atomic accept — only one traveller wins
     if (action === "accept") {
       const updatedParcel = await Parcel.findOneAndUpdate(
         {
           _id: parcelId,
-          status: "searching",
+          status: openStatusFilter(),
+          traveller: null,
         },
         {
           traveller: req.user.userId,
-          status: "matched",
+          status: "MATCHED",
         },
         { new: true }
-      );
+      ).populate("sender", "email fullName");
 
       if (!updatedParcel) {
         return res.status(400).json({
-          message: "Parcel already accepted by someone else",
+          message: "Parcel already accepted by another traveller",
         });
       }
 
-      await sendEmail(
-        sender.email,
-        "Parcel Accepted 🎉",
-        `Good news! Your parcel from ${parcel.pickup.city} to ${parcel.drop.city} has been accepted by a traveller.`
-      );
-
-      return res.json({
-        message: "Parcel accepted successfully & email sent",
-        parcel: updatedParcel,
-      });
-    }
-
-    // 📦 DELIVER
-    if (action === "deliver") {
-      const updatedParcel = await Parcel.findOneAndUpdate(
-        {
-          _id: parcelId,
-          traveller: req.user.userId,
-          status: "matched",
-        },
-        {
-          status: "delivered",
-        },
-        { new: true }
-      );
-
-      if (!updatedParcel) {
-        return res.status(400).json({
-          message: "Parcel cannot be delivered",
-        });
+      const sender: any = updatedParcel.sender;
+      if (sender?.email) {
+        await sendEmail(
+          sender.email,
+          "Parcel accepted",
+          `Your parcel from ${updatedParcel.pickup.city} to ${updatedParcel.drop.city} was accepted.`
+        );
       }
 
-      await sendEmail(
-        sender.email,
-        "Parcel Delivered ✅",
-        `Your parcel from ${parcel.pickup.city} to ${parcel.drop.city} has been successfully delivered.`
-      );
-
       return res.json({
-        message: "Parcel marked as delivered & email sent",
+        message: "Parcel accepted",
         parcel: updatedParcel,
+        warning: updatedParcel.isFlagged
+          ? "This parcel was flagged for prohibited content. Review before pickup."
+          : undefined,
       });
     }
 
-    // ❌ invalid
-    return res.status(400).json({
-      message: "Invalid action (accept/decline/deliver only)",
-    });
+    const updatedParcel = await Parcel.findOneAndUpdate(
+      {
+        _id: parcelId,
+        traveller: req.user.userId,
+        status: { $in: transition.from },
+      },
+      { status: transition.to },
+      { new: true }
+    ).populate("sender", "email");
 
+    if (!updatedParcel) {
+      return res.status(400).json({ message: "Status update not allowed" });
+    }
+
+    const sender: any = updatedParcel.sender;
+    if (action === "deliver" && sender?.email) {
+      await sendEmail(
+        sender.email,
+        "Parcel delivered",
+        `Your parcel from ${updatedParcel.pickup.city} to ${updatedParcel.drop.city} was delivered.`
+      );
+    }
+
+    return res.json({ message: `Parcel ${action}`, parcel: updatedParcel });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }
 };
 
-// 🔥 Sender ke parcels with traveller info
-export const getMyParcelsWithTraveller = async (req: any, res: any) => {
+export const updateParcelStatusByTraveller = async (req: any, res: Response) => {
   try {
-    const parcels = await Parcel.find({
-      sender: req.user.userId
-    })
-      .populate("traveller", "fullName phone") // 🔥 traveller info
-      .sort({ createdAt: -1 });
+    const { parcelId } = req.params;
+    const { status } = req.body as { status?: string };
 
-    res.json(parcels);
+    const allowedStatuses = ["PICKED_UP", "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED"];
+    if (!status || !allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        message: "Allowed statuses: PICKED_UP, IN_TRANSIT, OUT_FOR_DELIVERY, DELIVERED",
+      });
+    }
 
+    const parcel = await Parcel.findOneAndUpdate(
+      {
+        _id: parcelId,
+        traveller: req.user.userId,
+        status: {
+          $in:
+            status === "PICKED_UP"
+              ? ["MATCHED", "matched", "ACCEPTED"]
+              : status === "IN_TRANSIT"
+              ? ["PICKED_UP", "MATCHED", "matched", "ACCEPTED"]
+              : status === "OUT_FOR_DELIVERY"
+              ? ["IN_TRANSIT", "in_transit", "PICKED_UP", "MATCHED", "matched"]
+              : ["OUT_FOR_DELIVERY", "IN_TRANSIT", "in_transit", "PICKED_UP", "MATCHED", "matched"],
+        },
+      },
+      { status },
+      { new: true }
+    );
+
+    if (!parcel) {
+      return res.status(404).json({ message: "Parcel not found or status transition denied" });
+    }
+
+    if (parcel.assignedTripId) {
+      if (status === "PICKED_UP" || status === "IN_TRANSIT" || status === "OUT_FOR_DELIVERY") {
+        await Traveller.findByIdAndUpdate(parcel.assignedTripId, {
+          status: "IN_TRANSIT",
+          isAvailable: false,
+        });
+      }
+
+      if (status === "DELIVERED") {
+        const pendingInTrip = await Parcel.countDocuments({
+          assignedTripId: parcel.assignedTripId,
+          status: {
+            $in: [
+              "PENDING",
+              "MATCHED",
+              "PICKED_UP",
+              "IN_TRANSIT",
+              "OUT_FOR_DELIVERY",
+              "OPEN",
+              "searching",
+              "matched",
+              "in_transit",
+            ],
+          },
+        });
+        if (pendingInTrip === 0) {
+          await Traveller.findByIdAndUpdate(parcel.assignedTripId, {
+            status: "COMPLETED",
+            isAvailable: false,
+          });
+        }
+      }
+    }
+
+    return res.json({ message: "Parcel status updated", parcel });
   } catch (err: any) {
-    res.status(500).json({ message: err.message });
+    return res.status(500).json({ message: err.message });
   }
 };
 
+export const getMyParcelsWithTraveller = async (req: any, res: Response) => {
+  try {
+    const { page, limit, skip } = getPagination(req);
+    const filter = { sender: req.user.userId };
+
+    const [parcels, total] = await Promise.all([
+      Parcel.find(filter)
+        .populate("traveller", "fullName phone")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Parcel.countDocuments(filter),
+    ]);
+
+    return res.json({ parcels, pagination: paginationMeta(total, page, limit), total, page, limit });
+  } catch (err: any) {
+    return res.status(500).json({ message: err.message });
+  }
+};

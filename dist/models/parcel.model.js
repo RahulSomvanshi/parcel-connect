@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 const mongoose_1 = __importStar(require("mongoose"));
+const parcel_1 = require("../constants/parcel");
 const parcelSchema = new mongoose_1.Schema({
     traveller: {
         type: mongoose_1.Schema.Types.ObjectId,
@@ -45,6 +46,20 @@ const parcelSchema = new mongoose_1.Schema({
         ref: "User",
         required: true,
     },
+    senderId: {
+        type: mongoose_1.Schema.Types.ObjectId,
+        ref: "User",
+        required: true,
+    },
+    assignedTripId: {
+        type: mongoose_1.Schema.Types.ObjectId,
+        ref: "Traveller",
+        default: null,
+    },
+    pickupCity: { type: String, required: true },
+    dropCity: { type: String, required: true },
+    normalizedPickupCity: { type: String, required: true },
+    normalizedDropCity: { type: String, required: true },
     pickup: {
         city: { type: String, required: true },
         address: { type: String, required: true },
@@ -57,12 +72,42 @@ const parcelSchema = new mongoose_1.Schema({
         type: Number,
         required: true,
     },
+    parcelDate: {
+        type: Date,
+        required: true,
+    },
+    preferredTravelDate: {
+        type: Date,
+        default: null,
+    },
     description: String,
     price: Number,
     status: {
         type: String,
-        enum: ["searching", "matched", "in_transit", "delivered"],
-        default: "searching",
+        enum: [
+            ...parcel_1.PARCEL_STATUSES,
+            "PENDING",
+            "MATCHED",
+            "searching",
+            "matched",
+            "in_transit",
+            "delivered",
+        ],
+        default: "PENDING",
+    },
+    isFlagged: {
+        type: Boolean,
+        default: false,
+    },
+    flaggedKeywords: {
+        type: [String],
+        default: [],
     },
 }, { timestamps: true });
+parcelSchema.index({ sender: 1, status: 1, createdAt: -1 });
+parcelSchema.index({ traveller: 1, status: 1, createdAt: -1 });
+parcelSchema.index({ status: 1, "pickup.city": 1, "drop.city": 1 });
+parcelSchema.index({ normalizedPickupCity: 1, normalizedDropCity: 1, status: 1 });
+parcelSchema.index({ normalizedPickupCity: 1, normalizedDropCity: 1, parcelDate: 1, status: 1 });
+parcelSchema.index({ createdAt: -1 });
 exports.default = mongoose_1.default.model("Parcel", parcelSchema);

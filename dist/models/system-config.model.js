@@ -34,53 +34,9 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 const mongoose_1 = __importStar(require("mongoose"));
-const travellerSchema = new mongoose_1.Schema({
-    user: {
-        type: mongoose_1.Schema.Types.ObjectId,
-        ref: "User",
-        required: true,
-    },
-    travellerId: {
-        type: mongoose_1.Schema.Types.ObjectId,
-        ref: "User",
-        required: true,
-    },
-    from: { type: String, required: true },
-    to: { type: String, required: true },
-    fromCity: { type: String, required: true },
-    toCity: { type: String, required: true },
-    normalizedFromCity: { type: String, required: true },
-    normalizedToCity: { type: String, required: true },
-    travelDate: { type: Date, required: true },
-    vehicleType: {
-        type: String,
-        enum: ["bus", "train", "car"],
-        required: true,
-    },
-    availableWeight: {
-        type: Number,
-        required: true,
-    },
-    isAvailable: {
-        type: Boolean,
-        default: true,
-    },
-    status: {
-        type: String,
-        enum: [
-            "PLANNED",
-            "ACTIVE",
-            "IN_TRANSIT",
-            "COMPLETED",
-            "CANCELLED",
-            "scheduled",
-            "in_transit",
-            "completed",
-            "cancelled",
-        ],
-        default: "PLANNED",
-    },
+const systemConfigSchema = new mongoose_1.Schema({
+    key: { type: String, required: true, unique: true },
+    stringValues: { type: [String], default: [] },
+    updatedBy: { type: mongoose_1.Schema.Types.ObjectId, ref: "User" },
 }, { timestamps: true });
-travellerSchema.index({ normalizedFromCity: 1, normalizedToCity: 1, status: 1 });
-travellerSchema.index({ user: 1, status: 1, createdAt: -1 });
-exports.default = mongoose_1.default.model("Traveller", travellerSchema);
+exports.default = mongoose_1.default.model("SystemConfig", systemConfigSchema);

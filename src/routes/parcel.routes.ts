@@ -7,6 +7,8 @@ import {
   deleteParcel,
   respondToParcel,
   getMyParcelsWithTraveller,
+  getProhibitedItems,
+  updateParcelStatusByTraveller,
 } from "../controllers/parcel.controller";
 
 import { authMiddleware } from "../middleware/auth.middleware";
@@ -15,29 +17,42 @@ import { authorizeRoles } from "../middleware/role.middleware";
 const router = Router();
 
 // User/Admin routes
-router.post("/", authMiddleware, authorizeRoles("user", "admin"), createParcel);
+router.post("/", authMiddleware, authorizeRoles("sender"), createParcel);
 
-router.get("/", authMiddleware, authorizeRoles("user", "admin"), getMyParcels);
+router.get("/", authMiddleware, authorizeRoles("sender"), getMyParcels);
+router.get(
+  "/prohibited-items",
+  authMiddleware,
+  authorizeRoles("sender", "traveller", "admin"),
+  getProhibitedItems
+);
 
 
 
 router.post(
   "/respond",
   authMiddleware,
-  authorizeRoles("user", "admin"),
+  authorizeRoles("traveller"),
   respondToParcel
 );
 
 router.get(
   "/my",
   authMiddleware,
-  authorizeRoles("user", "admin"),
+  authorizeRoles("sender"),
   getMyParcelsWithTraveller
 );
 
-router.get("/:id", authMiddleware, authorizeRoles("user", "admin"), getParcelById);
+router.get("/:id", authMiddleware, authorizeRoles("sender"), getParcelById);
 
-router.put("/:id", authMiddleware, authorizeRoles("user", "admin"), updateParcel);
+router.patch(
+  "/:parcelId/status",
+  authMiddleware,
+  authorizeRoles("traveller"),
+  updateParcelStatusByTraveller
+);
 
-router.delete("/:id", authMiddleware, authorizeRoles("user", "admin"), deleteParcel);
+router.put("/:id", authMiddleware, authorizeRoles("sender"), updateParcel);
+
+router.delete("/:id", authMiddleware, authorizeRoles("sender"), deleteParcel);
 export default router;

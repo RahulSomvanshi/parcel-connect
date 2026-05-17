@@ -5,7 +5,12 @@ const admin_controller_1 = require("../controllers/admin.controller");
 const auth_middleware_1 = require("../middleware/auth.middleware");
 const role_middleware_1 = require("../middleware/role.middleware");
 const router = (0, express_1.Router)();
-// 🔥 only admin allowed
+router.get("/dashboard", auth_middleware_1.authMiddleware, (0, role_middleware_1.authorizeRoles)("admin"), admin_controller_1.getAdminDashboard);
+router.get("/stats", auth_middleware_1.authMiddleware, (0, role_middleware_1.authorizeRoles)("admin"), admin_controller_1.getAdminStats);
 router.get("/users", auth_middleware_1.authMiddleware, (0, role_middleware_1.authorizeRoles)("admin"), admin_controller_1.getAllUsers);
 router.get("/parcels", auth_middleware_1.authMiddleware, (0, role_middleware_1.authorizeRoles)("admin"), admin_controller_1.getAllParcelsAdmin);
+router.post("/travellers", auth_middleware_1.authMiddleware, (0, role_middleware_1.authorizeRoles)("admin"), admin_controller_1.createTravellerUser);
+router.post("/trips", auth_middleware_1.authMiddleware, (0, role_middleware_1.authorizeRoles)("admin"), admin_controller_1.createTravelPlan);
+router.get("/prohibited-items", auth_middleware_1.authMiddleware, (0, role_middleware_1.authorizeRoles)("admin"), admin_controller_1.getProhibitedItemsAdmin);
+router.put("/prohibited-items", auth_middleware_1.authMiddleware, (0, role_middleware_1.authorizeRoles)("admin"), admin_controller_1.updateProhibitedItemsAdmin);
 exports.default = router;

@@ -12,7 +12,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getAllUsers = exports.resendOtp = exports.refreshToken = exports.login = exports.verifyOtp = exports.register = void 0;
+exports.resendOtp = exports.getMe = exports.refreshToken = exports.login = exports.verifyOtp = exports.register = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const user_model_1 = __importDefault(require("../models/user.model"));
 const otp_1 = require("../utils/otp");
@@ -20,24 +20,41 @@ const jwt_1 = require("../utils/jwt");
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const sendSMS_1 = require("../utils/sendSMS");
 const sendEmail_1 = require("../utils/sendEmail");
+const formatAuthUser = (user) => ({
+    _id: user._id.toString(),
+    fullName: user.fullName,
+    phone: user.phone,
+    email: user.email,
+    role: user.role,
+    isVerified: user.isVerified,
+});
+const OTP_EXPIRY_MS = 5 * 60 * 1000;
+const issueOtpForUser = (user) => __awaiter(void 0, void 0, void 0, function* () {
+    const otp = (0, otp_1.generateOTP)();
+    user.otp = yield bcryptjs_1.default.hash(otp, 10);
+    user.otpExpiry = new Date(Date.now() + OTP_EXPIRY_MS);
+    return otp;
+});
 // REGISTER
 const register = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { fullName, email, phone, password, role } = req.body;
-        // check existing
         const existingUser = yield user_model_1.default.findOne({
-            $or: [{ email }],
+            $or: [
+                { phone },
+                ...(email ? [{ email }] : []),
+            ],
         });
         if (existingUser) {
             return res.status(400).json({ message: "User already exists" });
         }
-        // hash password
         const hashedPassword = yield bcryptjs_1.default.hash(password, 10);
-        // generate OTP
-        const otp = (0, otp_1.generateOTP)();
-        const allowedRoles = ["user", "admin"];
-        let finalRole = "user";
-        if (role && allowedRoles.includes(role)) {
+        const otpPlain = (0, otp_1.generateOTP)();
+        const otp = yield bcryptjs_1.default.hash(otpPlain, 10);
+        // Public registration: sender or traveller only (admin via seed)
+        const publicRoles = ["sender", "traveller"];
+        let finalRole = "sender";
+        if (role && publicRoles.includes(role)) {
             finalRole = role;
         }
         const user = yield user_model_1.default.create({
@@ -47,18 +64,21 @@ const register = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             password: hashedPassword,
             role: finalRole,
             otp, // store (later hash kar sakte ho)
-            otpExpiry: new Date(Date.now() + 5 * 60 * 1000),
+            otpExpiry: new Date(Date.now() + OTP_EXPIRY_MS),
             isVerified: false,
         });
         // 📱 send OTP (SMS or Email) - Non-blocking
         // Don't await these to avoid blocking registration
-        (0, sendSMS_1.sendSMS)(phone, otp).catch(err => {
+        (0, sendSMS_1.sendSMS)(phone, otpPlain).catch(err => {
         });
-        (0, sendEmail_1.sendEmail)(email, "OTP Verification", `Your OTP is ${otp}`).catch(err => {
-        });
+        if (email) {
+            (0, sendEmail_1.sendEmail)(email, "OTP Verification", `Your OTP is ${otpPlain}`).catch(err => {
+            });
+        }
         return res.json({
             message: "Registered successfully. OTP sent",
-            phone: user.phone, // frontend use karega
+            phone: user.phone,
+            role: user.role,
         });
     }
     catch (error) {
@@ -71,13 +91,26 @@ const verifyOtp = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { phone, otp } = req.body;
         const user = yield user_model_1.default.findOne({ phone });
-        if (!user || user.otp !== otp || user.otpExpiry < new Date()) {
+        if (!user || !user.otp || !user.otpExpiry || user.otpExpiry < new Date()) {
+            return res.status(400).json({ message: "Invalid or expired OTP" });
+        }
+        const isOtpValid = yield bcryptjs_1.default.compare(otp, user.otp);
+        if (!isOtpValid) {
             return res.status(400).json({ message: "Invalid or expired OTP" });
         }
         user.isVerified = true;
         user.otp = undefined;
+        user.otpExpiry = undefined;
+        const token = (0, jwt_1.generateToken)(user._id.toString(), user.role);
+        const refreshToken = (0, jwt_1.generateRefreshToken)(user._id.toString());
+        user.refreshToken = refreshToken;
         yield user.save();
-        return res.json({ message: "Account verified successfully" });
+        return res.json({
+            message: "Account verified successfully",
+            token,
+            refreshToken,
+            user: formatAuthUser(user),
+        });
     }
     catch (error) {
         return res.status(500).json({ message: error.message });
@@ -104,13 +137,17 @@ const login = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
         }
         // 3. check verified
         if (!user.isVerified) {
-            const otp = (0, otp_1.generateOTP)();
-            user.otp = otp;
-            user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
+            const otp = yield issueOtpForUser(user);
             yield user.save();
+            (0, sendSMS_1.sendSMS)(user.phone, otp).catch(() => { });
+            if (user.email) {
+                (0, sendEmail_1.sendEmail)(user.email, "OTP Verification", `Your OTP is ${otp}`).catch(() => { });
+            }
             return res.status(400).json({
                 message: "OTP sent. Please verify",
                 isVerified: false,
+                phone: user.phone,
+                role: user.role,
             });
         }
         // 4. generate token
@@ -122,13 +159,7 @@ const login = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             message: "Login successful",
             token,
             refreshToken,
-            user: {
-                id: user._id,
-                fullName: user.fullName,
-                phone: user.phone,
-                role: user.role,
-                isVerified: user.isVerified
-            },
+            user: formatAuthUser(user),
         });
     }
     catch (error) {
@@ -137,24 +168,42 @@ const login = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
 });
 exports.login = login;
 const refreshToken = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const { refreshToken } = req.body;
-    if (!refreshToken) {
+    const { refreshToken: bodyRefreshToken } = req.body;
+    if (!bodyRefreshToken) {
         return res.status(401).json({ message: "No refresh token" });
     }
     try {
-        const decoded = jsonwebtoken_1.default.verify(refreshToken, process.env.REFRESH_SECRET);
+        const decoded = jsonwebtoken_1.default.verify(bodyRefreshToken, process.env.REFRESH_SECRET);
         const user = yield user_model_1.default.findById(decoded.userId);
-        if (!user || user.refreshToken !== refreshToken) {
+        if (!user || user.refreshToken !== bodyRefreshToken) {
             return res.status(403).json({ message: "Invalid refresh token" });
         }
-        const newAccessToken = (0, jwt_1.generateToken)(user._id.toString(), user.role);
-        return res.json({ accessToken: newAccessToken });
+        const token = (0, jwt_1.generateToken)(user._id.toString(), user.role);
+        return res.json({
+            token,
+            refreshToken: bodyRefreshToken,
+            user: formatAuthUser(user),
+        });
     }
     catch (_a) {
         return res.status(403).json({ message: "Token expired" });
     }
 });
 exports.refreshToken = refreshToken;
+/** Current user from DB — source of truth for role after refresh */
+const getMe = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const user = yield user_model_1.default.findById(req.user.userId).select("-password -otp -otpExpiry -refreshToken");
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+        return res.json({ user: formatAuthUser(user) });
+    }
+    catch (error) {
+        return res.status(500).json({ message: error.message });
+    }
+});
+exports.getMe = getMe;
 const resendOtp = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { phone } = req.body;
@@ -165,9 +214,7 @@ const resendOtp = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
         if (user.isVerified) {
             return res.status(400).json({ message: "Already verified" });
         }
-        const otp = (0, otp_1.generateOTP)();
-        user.otp = otp;
-        user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
+        const otp = yield issueOtpForUser(user);
         yield (0, sendSMS_1.sendSMS)(phone, otp);
         yield user.save();
         return res.json({
@@ -179,13 +226,3 @@ const resendOtp = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     }
 });
 exports.resendOtp = resendOtp;
-const getAllUsers = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        const users = yield user_model_1.default.find().select("-password");
-        res.json(users);
-    }
-    catch (err) {
-        res.status(500).json({ message: err.message });
-    }
-});
-exports.getAllUsers = getAllUsers;

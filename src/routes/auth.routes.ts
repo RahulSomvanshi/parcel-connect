@@ -1,9 +1,15 @@
 import { Router } from "express";
-import { refreshToken, register, resendOtp, verifyOtp } from "../controllers/auth.controller";
+import {
+  getMe,
+  refreshToken,
+  register,
+  resendOtp,
+  verifyOtp,
+  login,
+} from "../controllers/auth.controller";
 import { validate } from "../middleware/validate";
 import { registerSchema } from "../validators/auth.validator";
-import { login } from "../controllers/auth.controller";
-import { testEmail } from "../controllers/test.controller";
+import { authMiddleware } from "../middleware/auth.middleware";
 const router = Router();
 
 router.post("/register", validate(registerSchema), register);
@@ -11,6 +17,6 @@ router.post("/verify-otp", verifyOtp);
 router.post("/login", login);
 router.post("/refresh-token", refreshToken);
 router.post("/resend-otp", resendOtp);
-router.get("/test-email", testEmail);
+router.get("/me", authMiddleware, getMe);
 
 export default router;

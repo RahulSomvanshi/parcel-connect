@@ -7,6 +7,24 @@ import jwt from "jsonwebtoken";
 import { sendSMS } from "../utils/sendSMS";
 import { sendEmail } from "../utils/sendEmail";
 
+const formatAuthUser = (user: InstanceType<typeof User>) => ({
+  _id: user._id.toString(),
+  fullName: user.fullName,
+  phone: user.phone,
+  email: user.email,
+  role: user.role,
+  isVerified: user.isVerified,
+});
+
+const OTP_EXPIRY_MS = 5 * 60 * 1000;
+
+const issueOtpForUser = async (user: InstanceType<typeof User>): Promise<string> => {
+  const otp = generateOTP();
+  user.otp = await bcrypt.hash(otp, 10);
+  user.otpExpiry = new Date(Date.now() + OTP_EXPIRY_MS);
+  return otp;
+};
+
 // REGISTER
 export const register = async (req: Request, res: Response) => {
   try {
@@ -14,27 +32,25 @@ export const register = async (req: Request, res: Response) => {
     const { fullName, email, phone, password, role } = req.body;
 
 
-    // check existing
     const existingUser = await User.findOne({
-      $or: [{ email }],
+      $or: [
+        { phone },
+        ...(email ? [{ email }] : []),
+      ],
     });
 
     if (existingUser) {
       return res.status(400).json({ message: "User already exists" });
     }
 
-
-    // hash password
     const hashedPassword = await bcrypt.hash(password, 10);
+    const otpPlain = generateOTP();
+    const otp = await bcrypt.hash(otpPlain, 10);
 
-    // generate OTP
-    const otp = generateOTP();
-    
-    const allowedRoles = ["user", "admin"];
-
-    let finalRole = "user";
-
-    if (role && allowedRoles.includes(role)) {
+    // Public registration: sender or traveller only (admin via seed)
+    const publicRoles = ["sender", "traveller"];
+    let finalRole = "sender";
+    if (role && publicRoles.includes(role)) {
       finalRole = role;
     }
     
@@ -45,23 +61,26 @@ export const register = async (req: Request, res: Response) => {
       password: hashedPassword,
       role: finalRole,
       otp, // store (later hash kar sakte ho)
-      otpExpiry: new Date(Date.now() + 5 * 60 * 1000),
+      otpExpiry: new Date(Date.now() + OTP_EXPIRY_MS),
       isVerified: false,
     });
 
     
     // 📱 send OTP (SMS or Email) - Non-blocking
     // Don't await these to avoid blocking registration
-    sendSMS(phone, otp).catch(err => {
+    sendSMS(phone, otpPlain).catch(err => {
     });
     
-    sendEmail(email, "OTP Verification", `Your OTP is ${otp}`).catch(err => {
-    });
+    if (email) {
+      sendEmail(email, "OTP Verification", `Your OTP is ${otpPlain}`).catch(err => {
+      });
+    }
 
 
     return res.json({
       message: "Registered successfully. OTP sent",
-      phone: user.phone, // frontend use karega
+      phone: user.phone,
+      role: user.role,
     });
 
   } catch (error: any) {
@@ -76,16 +95,31 @@ export const verifyOtp = async (req: Request, res: Response) => {
 
     const user = await User.findOne({ phone });
 
-    if (!user || user.otp !== otp || user.otpExpiry! < new Date()) {
+    if (!user || !user.otp || !user.otpExpiry || user.otpExpiry < new Date()) {
+      return res.status(400).json({ message: "Invalid or expired OTP" });
+    }
+
+    const isOtpValid = await bcrypt.compare(otp, user.otp);
+    if (!isOtpValid) {
       return res.status(400).json({ message: "Invalid or expired OTP" });
     }
 
     user.isVerified = true;
     user.otp = undefined;
+    user.otpExpiry = undefined;
+
+    const token = generateToken(user._id.toString(), user.role);
+    const refreshToken = generateRefreshToken(user._id.toString());
+    user.refreshToken = refreshToken;
 
     await user.save();
 
-    return res.json({ message: "Account verified successfully" });
+    return res.json({
+      message: "Account verified successfully",
+      token,
+      refreshToken,
+      user: formatAuthUser(user),
+    });
   } catch (error: any) {
     return res.status(500).json({ message: error.message });
   }
@@ -117,16 +151,19 @@ export const login = async (req: Request, res: Response) => {
     // 3. check verified
 
     if (!user.isVerified) {
-      const otp = generateOTP();
-
-      user.otp = otp;
-      user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
+      const otp = await issueOtpForUser(user);
       await user.save();
 
+      sendSMS(user.phone, otp).catch(() => {});
+      if (user.email) {
+        sendEmail(user.email, "OTP Verification", `Your OTP is ${otp}`).catch(() => {});
+      }
 
       return res.status(400).json({
         message: "OTP sent. Please verify",
         isVerified: false,
+        phone: user.phone,
+        role: user.role,
       });
     }
 
@@ -141,13 +178,7 @@ export const login = async (req: Request, res: Response) => {
       message: "Login successful",
       token,
       refreshToken,
-      user: {
-        id: user._id,
-        fullName: user.fullName,
-        phone: user.phone,
-        role: user.role,
-        isVerified: user.isVerified
-      },
+      user: formatAuthUser(user),
     });
   } catch (error: any) {
     return res.status(500).json({ message: error.message });
@@ -155,29 +186,50 @@ export const login = async (req: Request, res: Response) => {
 };
 
 export const refreshToken = async (req: Request, res: Response) => {
-  const { refreshToken } = req.body;
+  const { refreshToken: bodyRefreshToken } = req.body;
 
-  if (!refreshToken) {
+  if (!bodyRefreshToken) {
     return res.status(401).json({ message: "No refresh token" });
   }
 
   try {
     const decoded: any = jwt.verify(
-      refreshToken,
+      bodyRefreshToken,
       process.env.REFRESH_SECRET as string,
     );
 
     const user = await User.findById(decoded.userId);
 
-    if (!user || user.refreshToken !== refreshToken) {
+    if (!user || user.refreshToken !== bodyRefreshToken) {
       return res.status(403).json({ message: "Invalid refresh token" });
     }
 
-    const newAccessToken = generateToken(user._id.toString(), user.role);
+    const token = generateToken(user._id.toString(), user.role);
 
-    return res.json({ accessToken: newAccessToken });
+    return res.json({
+      token,
+      refreshToken: bodyRefreshToken,
+      user: formatAuthUser(user),
+    });
   } catch {
     return res.status(403).json({ message: "Token expired" });
+  }
+};
+
+/** Current user from DB — source of truth for role after refresh */
+export const getMe = async (req: any, res: Response) => {
+  try {
+    const user = await User.findById(req.user.userId).select(
+      "-password -otp -otpExpiry -refreshToken"
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.json({ user: formatAuthUser(user) });
+  } catch (error: any) {
+    return res.status(500).json({ message: error.message });
   }
 };
 
@@ -197,10 +249,7 @@ export const resendOtp = async (req: Request, res: Response) => {
       return res.status(400).json({ message: "Already verified" });
     }
 
-    const otp = generateOTP();
-
-    user.otp = otp;
-    user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
+    const otp = await issueOtpForUser(user);
     await sendSMS(phone, otp);
     await user.save();
 
@@ -211,16 +260,5 @@ export const resendOtp = async (req: Request, res: Response) => {
 
   } catch (error: any) {
     return res.status(500).json({ message: error.message });
-  }
-};
-
-export const getAllUsers = async (req: any, res: any) => {
-  try {
-    const users = await User.find().select("-password");
-
-    res.json(users);
-
-  } catch (err: any) {
-    res.status(500).json({ message: err.message });
   }
 };

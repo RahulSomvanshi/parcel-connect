@@ -7,5 +7,5 @@ exports.registerSchema = zod_1.z.object({
     email: zod_1.z.string().email("Invalid email").optional(),
     phone: zod_1.z.string().min(10, "Phone must be 10 digits"),
     password: zod_1.z.string().min(6, "Password must be at least 6 characters"),
-    role: zod_1.z.enum(["user", "admin"]).optional(),
+    role: zod_1.z.enum(["sender", "traveller"]).optional(),
 });
